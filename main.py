@@ -9,6 +9,7 @@ import numpy as np
 
 
 signal_data_dict = {}
+signal_choices_dict = {}
 
 
 def gen_signal_name(bus_name, message_name, signal_name):
@@ -18,6 +19,7 @@ def gen_signal_name(bus_name, message_name, signal_name):
 def initialize_signal_dict(can1_dbs, can2_dbs, can3_dbs):
     # Clear
     signal_data_dict.clear()
+    signal_choices_dict.clear()
 
     # CAN 1
     for can1_db in can1_dbs:
@@ -67,10 +69,33 @@ def read_can_signals(log, can1_dbs, can2_dbs, can3_dbs):
 
             # Iterate over all signals in message
             for signal_name, signal_value in decoded_signals.items():
-                signal_data_dict[gen_signal_name(can_str_list[msg.channel], message.name, signal_name)].append((timestamp, signal_value))
+                full_signal_name = gen_signal_name(can_str_list[msg.channel], message.name, signal_name)
+                signal_data_dict[full_signal_name].append((timestamp, signal_value))
+                choices = message.get_signal_by_name(signal_name).choices
+                if choices is not None:
+                    choices = {value: name.name for value, name in choices.items()}
+                    signal_choices_dict[full_signal_name] = choices
+                    
 
             # Do not check other db files. Assume no msg id collision
             break
+
+
+def asciify(string):
+    replacements = {
+        'ä': 'ae',
+        'ö': 'oe',
+        'ü': 'ue',
+        'Ä': 'Ae',
+        'Ö': 'Oe',
+        'Ü': 'Ue',
+        'ß': 'ss'
+    }
+    string = ''.join(replacements.get(c, c) for c in string)
+    string = string.encode('ascii', 'ignore').decode('ascii')
+    for german_char, replacement in replacements.items():
+        string = string.replace(german_char, replacement)    
+    return string.encode('ascii')
 
 
 def process_blf_files(blf_file_paths, can1_db_paths, can2_db_paths, can3_db_paths):
@@ -100,12 +125,30 @@ def process_blf_files(blf_file_paths, can1_db_paths, can2_db_paths, can3_db_path
             timestamps, values = zip(*signal_data)
 
             # Handle named value signals
-            values = [
-                value.value if isinstance(value, cantools.database.namedsignalvalue.NamedSignalValue) else value
-                for value in values]
+            conversion = None
+            if isinstance(values[0], cantools.database.namedsignalvalue.NamedSignalValue):
+                # Conversion
+                initial_dict = signal_choices_dict[signal_name]
+                conversion = {}
+                for idx, (value, name) in enumerate(initial_dict.items()):
+                    conversion[f'val_{idx}'] = value
+                    conversion[f'text_{idx}'] = asciify(name)
+
+                # Samples are raw
+                values = [value.value for value in values]
+
+            # Double check for NamedSignalValue
+            values = [value.value if isinstance(value, cantools.database.namedsignalvalue.NamedSignalValue) 
+                      else value 
+                      for value in values]
 
             # Add signal
-            signal = Signal(samples=values, timestamps=timestamps, name=signal_name, encoding='utf-8')
+            signal = Signal(
+                samples=values, 
+                timestamps=timestamps, 
+                name=signal_name, 
+                encoding='utf-8',
+                conversion=conversion)
             mdf.append(signal)
 
         # Save MDF file

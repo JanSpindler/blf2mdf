@@ -5,6 +5,7 @@ from asammdf import Signal, MDF
 from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QLabel, QPushButton
 from PyQt6.QtCore import Qt
 import sys
+import os
 
 
 signal_data_dict = {}
@@ -14,35 +15,99 @@ def gen_signal_name(bus_name, message_name, signal_name):
     return f'{bus_name}::{message_name}::{signal_name}'
 
 
-def initialize_signal_dict(db):
-    for message in tqdm(db.messages):
-        for signal in message.signals:
-            signal_data_dict[gen_signal_name('CAN1', message.name, signal.name)] = []
+def initialize_signal_dict(can1_dbs, can2_dbs, can3_dbs):
+    # Clear
+    signal_data_dict.clear()
+
+    # CAN 1
+    for can1_db in can1_dbs:
+        for message in can1_db.messages:
+            for signal in message.signals:
+                signal_data_dict[gen_signal_name('CAN1', message.name, signal.name)] = []
+
+    # CAN 2
+    for can2_db in can2_dbs:
+        for message in can2_db.messages:
+            for signal in message.signals:
+                signal_data_dict[gen_signal_name('CAN2', message.name, signal.name)] = []
+
+    # CAN 3
+    for can3_db in can3_dbs:
+        for message in can3_db.messages:
+            for signal in message.signals:
+                signal_data_dict[gen_signal_name('CAN3', message.name, signal.name)] = []
 
 
-def read_can_signals(log, db):
+def read_can_signals(log, can1_dbs, can2_dbs, can3_dbs):
     # Init
     start_time = None
 
     # Iterate over all messages
+    can_bus_list = [can1_dbs, can2_dbs, can3_dbs]
+    can_str_list = ['CAN1', 'CAN2', 'CAN3']
     for msg in tqdm(log):
         # Get start time
         if start_time is None:
             start_time = msg.timestamp
 
-        # Try to find message by id
-        try:
-            message = db.get_message_by_frame_id(msg.arbitration_id)
-        except KeyError:
-            continue
+        # Get correct CAN bus list
+        dbs = can_bus_list[msg.channel]
 
-        #
-        timestamp = msg.timestamp - start_time
-        decoded_signals = db.decode_message(msg.arbitration_id, msg.data)
+        # Iterate over db in dbs
+        for db in dbs:
+            # Try to find message by id
+            try:
+                message = db.get_message_by_frame_id(msg.arbitration_id)
+            except KeyError:
+                continue
 
-        # Iterate over all signals in message
-        for signal_name, signal_value in decoded_signals.items():
-            signal_data_dict[gen_signal_name('CAN1', message.name, signal_name)].append((timestamp, signal_value))
+            #
+            timestamp = msg.timestamp - start_time
+            decoded_signals = db.decode_message(msg.arbitration_id, msg.data)
+
+            # Iterate over all signals in message
+            for signal_name, signal_value in decoded_signals.items():
+                signal_data_dict[gen_signal_name(can_str_list[msg.channel], message.name, signal_name)].append((timestamp, signal_value))
+
+            # Do not check other db files. Assume no msg id collision
+            break
+
+
+def process_blf_files(blf_file_paths, can1_db_paths, can2_db_paths, can3_db_paths):
+    # Load CAN DBC files
+    can1_dbs = [cantools.database.load_file(can1_db_path) for can1_db_path in can1_db_paths]
+    can2_dbs = [cantools.database.load_file(can2_db_path) for can2_db_path in can2_db_paths]
+    can3_dbs = [cantools.database.load_file(can3_db_path) for can3_db_path in can3_db_paths]
+
+    # Iterate over all BLF files
+    for blf_file_path in blf_file_paths:
+        # Init signal data dict
+        initialize_signal_dict(can1_dbs, can2_dbs, can3_dbs)
+        print(f'Processing {blf_file_path}')
+
+        # Read CAN signals
+        with can.BLFReader(blf_file_path) as log:
+            read_can_signals(log, can1_dbs, can2_dbs, can3_dbs)
+
+        # Create MDF file
+        mdf = MDF(version='4.11')
+        for signal_name, signal_data in tqdm(signal_data_dict.items()):
+            if not signal_data:
+                continue
+            timestamps, values = zip(*signal_data)
+
+            try:
+                signal = Signal(
+                    samples=values, 
+                    timestamps=timestamps, 
+                    name=signal_name, 
+                    encoding='utf-8')
+                mdf.append(signal)
+            except Exception as e:
+                print(f'Signal: {signal_name} | Error: {e}')
+                continue
+        
+        mdf.save(blf_file_path.replace('.blf', '.mf4'), overwrite=True, compression=2)
 
 
 class MainWindow(QMainWindow):
@@ -50,8 +115,8 @@ class MainWindow(QMainWindow):
         # Window
         super().__init__()
         self.setWindowTitle("blf2mdf")
-        self.setGeometry(100, 100, 800, 560)
-        self.setFixedSize(800, 560)
+        self.setGeometry(100, 100, 800, 700)
+        self.setFixedSize(800, 700)
 
         # BLF file selection
         self.select_blf_button = QPushButton("Select .blf files", self)
@@ -101,6 +166,11 @@ class MainWindow(QMainWindow):
         self.selected_can3_dbc_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.selected_can3_dbc_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
+        # Process button
+        self.process_button = QPushButton("Process", self)
+        self.process_button.setGeometry(10, 610, 150, 30)
+        self.process_button.clicked.connect(self.process_blfs)
+
 
     def select_blf_file(self):
         file_dialog = QFileDialog(self)
@@ -138,27 +208,19 @@ class MainWindow(QMainWindow):
             self.selected_can3_dbc_label.setText("Selected files:\n" + "\n".join(self.selected_can3_dbc))
 
 
+    def process_blfs(self):
+        if not hasattr(self, 'selected_blf') or not hasattr(self, 'selected_can1_dbc') or not hasattr(self, 'selected_can2_dbc') or not hasattr(self, 'selected_can3_dbc'):
+            return
+        process_blf_files(
+            self.selected_blf, 
+            self.selected_can1_dbc, 
+            self.selected_can2_dbc, 
+            self.selected_can3_dbc)
+
+
 if __name__ == '__main__':
     # Select file
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
-    # Load DBC file
-    db = cantools.database.load_file('data/DBC/GXe_CAN1.dbc')
-    initialize_signal_dict(db)
-
-    # Read CAN signals
-    with can.BLFReader('data/Measurement_40.blf') as log:
-        read_can_signals(log, db)
-
-    # Create MDF file
-    mdf = MDF(version='4.11')
-    for signal_name, signal_data in tqdm(signal_data_dict.items()):
-        if not signal_data:
-            continue
-        timestamps, values = zip(*signal_data)
-        signal = Signal(samples=values, timestamps=timestamps, name=signal_name, encoding='utf-8')
-        mdf.append(signal)
-    mdf.save('result.mdf', overwrite=True, compression=2)

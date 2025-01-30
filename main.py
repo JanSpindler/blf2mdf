@@ -5,7 +5,7 @@ from asammdf import Signal, MDF
 from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QLabel, QPushButton
 from PyQt6.QtCore import Qt
 import sys
-import os
+import numpy as np
 
 
 signal_data_dict = {}
@@ -90,24 +90,28 @@ def process_blf_files(blf_file_paths, can1_db_paths, can2_db_paths, can3_db_path
             read_can_signals(log, can1_dbs, can2_dbs, can3_dbs)
 
         # Create MDF file
-        mdf = MDF(version='4.11')
+        mdf = MDF(version='4.20')
         for signal_name, signal_data in tqdm(signal_data_dict.items()):
+            # Check if data is empty
             if not signal_data:
                 continue
+
+            # Seperate timestamps and values
             timestamps, values = zip(*signal_data)
 
-            try:
-                signal = Signal(
-                    samples=values, 
-                    timestamps=timestamps, 
-                    name=signal_name, 
-                    encoding='utf-8')
-                mdf.append(signal)
-            except Exception as e:
-                print(f'Signal: {signal_name} | Error: {e}')
-                continue
-        
-        mdf.save(blf_file_path.replace('.blf', '.mf4'), overwrite=True, compression=2)
+            # Handle named value signals
+            values = [
+                value.value if isinstance(value, cantools.database.namedsignalvalue.NamedSignalValue) else value
+                for value in values]
+
+            # Add signal
+            signal = Signal(samples=values, timestamps=timestamps, name=signal_name, encoding='utf-8')
+            mdf.append(signal)
+
+        # Save MDF file
+        result_file_name = blf_file_path.replace('.blf', '.mf4')
+        mdf.save(result_file_name, overwrite=True, compression=2)
+        print(f'Saved {result_file_name}')
 
 
 class MainWindow(QMainWindow):

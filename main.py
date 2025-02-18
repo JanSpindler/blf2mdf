@@ -1,11 +1,11 @@
 import cantools
 import can
+import cantools.database
 from tqdm import tqdm
 from asammdf import Signal, MDF
 from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QLabel, QPushButton
 from PyQt6.QtCore import Qt
 import sys
-import numpy as np
 
 
 signal_data_dict = {}
@@ -63,9 +63,14 @@ def read_can_signals(log, can1_dbs, can2_dbs, can3_dbs):
             except KeyError:
                 continue
 
-            #
+            # Get relative timestamp
             timestamp = msg.timestamp - start_time
-            decoded_signals = db.decode_message(msg.arbitration_id, msg.data)
+
+            # Try to decode message
+            try:
+                decoded_signals = db.decode_message(msg.arbitration_id, msg.data)
+            except cantools.database.DecodeError:
+                continue
 
             # Iterate over all signals in message
             for signal_name, signal_value in decoded_signals.items():
@@ -75,7 +80,6 @@ def read_can_signals(log, can1_dbs, can2_dbs, can3_dbs):
                 if choices is not None:
                     choices = {value: name.name for value, name in choices.items()}
                     signal_choices_dict[full_signal_name] = choices
-                    
 
             # Do not check other db files. Assume no msg id collision
             break

@@ -163,6 +163,12 @@ def process_blf_files(blf_file_paths, can1_db_paths, can2_db_paths, can3_db_path
 
 class MainWindow(QMainWindow):
     def __init__(self):
+        # Init
+        self.selected_blf = []
+        self.selected_can1_dbc = []
+        self.selected_can2_dbc = []
+        self.selected_can3_dbc = []
+
         # Window
         super().__init__()
         self.setWindowTitle("blf2mdf")
@@ -260,13 +266,21 @@ class MainWindow(QMainWindow):
 
 
     def process_blfs(self):
-        if not hasattr(self, 'selected_blf') or not hasattr(self, 'selected_can1_dbc') or not hasattr(self, 'selected_can2_dbc') or not hasattr(self, 'selected_can3_dbc'):
+        if len(self.selected_blf) == 0:
+            print('No BLF file selected')
             return
+        
+        if len(self.selected_can1_dbc) + len(self.selected_can1_dbc) + len(self.selected_can1_dbc) == 0:
+            print('No DBC file selected')
+            return
+
         process_blf_files(
             self.selected_blf, 
             self.selected_can1_dbc, 
             self.selected_can2_dbc, 
             self.selected_can3_dbc)
+
+        exit(0)
 
 
 if __name__ == '__main__':

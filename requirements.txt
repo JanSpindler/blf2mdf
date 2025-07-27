@@ -1,0 +1,5 @@
+cantools
+python-can
+tqdm
+asammdf
+PyQt6

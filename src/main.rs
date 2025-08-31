@@ -29,7 +29,7 @@ fn load_dbc(path_str: &str) -> Result<DBC, Box<dyn std::error::Error>> {
     Ok(dbc)
 }
 
-fn extract_signal_with_byte_order(
+fn extract_signal_raw(
         data: &Vec<u8>, 
         start_bit: i64, 
         bit_count: i64, 
@@ -167,12 +167,6 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
             let is_signed = *signal.value_type() == ValueType::Signed;
 
             if is_float {
-                // println!("Float signals not implemented yet: {}", signal.name());
-                continue 'signal_loop;
-            }
-
-            if is_signed {
-                // println!("Signed signals not implemented yet: {}", signal.name());
                 continue 'signal_loop;
             }
 
@@ -180,9 +174,13 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
             let bit_count = *signal.signal_size() as i64;
             let is_big_endian = *signal.byte_order() == ByteOrder::BigEndian;
 
+            let factor = *signal.factor();
+            let offset = *signal.offset();
+            let store_as_float = is_float || (factor.fract() != 0.0) || (offset.fract() != 0.0);
+
             match signal.multiplexer_indicator() {
                 can_dbc::MultiplexIndicator::Plain => {
-                    let raw_value = match extract_signal_with_byte_order(
+                    let raw_value = match extract_signal_raw(
                             &msg_data, start_bit, bit_count, is_big_endian) {
                         Some(v) => v,
                         None => {
@@ -192,9 +190,41 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
                     };
 
                     if is_signed {
-                        data_store.push_int(signal.name(), msg_timestamp, raw_value as i64);
+                        // Convert raw value to signed using two's complement
+                        let signed_value = if bit_count < 64 {
+                            // Create mask for the number of bits
+                            let mask = (1u64 << bit_count) - 1;
+                            let masked_value = raw_value & mask;
+                            
+                            // Check if sign bit is set
+                            let sign_bit = 1u64 << (bit_count - 1);
+                            if masked_value & sign_bit != 0 {
+                                // Negative value - extend sign bits
+                                let sign_extension = !((1u64 << bit_count) - 1);
+                                (masked_value | sign_extension) as i64
+                            } else {
+                                // Positive value
+                                masked_value as i64
+                            }
+                        } else {
+                            raw_value as i64
+                        };
+
+                        if store_as_float {
+                            let physical_value = (signed_value as f64) * factor + offset;
+                            data_store.push_float(signal.name(), msg_timestamp, physical_value);
+                        } else {
+                            let physical_value = (factor as i64) * signed_value + (offset as i64);
+                            data_store.push_int(signal.name(), msg_timestamp, physical_value);
+                        }
                     } else {
-                        data_store.push_uint(signal.name(), msg_timestamp, raw_value);
+                        if store_as_float {
+                            let physical_value = (raw_value as f64) * factor + offset;
+                            data_store.push_float(signal.name(), msg_timestamp, physical_value);
+                        } else {
+                            let physical_value = (factor as u64) * raw_value + (offset as u64);
+                            data_store.push_uint(signal.name(), msg_timestamp, physical_value);
+                        }
                     }
                 },
                 can_dbc::MultiplexIndicator::MultiplexedSignal(_) => {

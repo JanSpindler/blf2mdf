@@ -1,7 +1,9 @@
 use can_dbc::{Message, DBC, SignalExtendedValueType, ValueType, ByteOrder};
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
+use std::process::Stdio;
+use tqdm::tqdm;
+use std::collections::HashMap;
 
 mod blf_reader;
 use blf_reader::BlfReader;
@@ -44,11 +46,9 @@ fn extract_signal_with_byte_order(
     if is_big_endian {
         // Motorola byte order (MSB first)
         // Start bit is the MSB of the signal
-        let end_bit = if start_bit >= bit_count - 1 {
-            start_bit - bit_count + 1
-        } else {
+        if start_bit < bit_count - 1 {
             return None;
-        };
+        }
         
         for bit_index in 0..bit_count {
             let absolute_bit = start_bit - bit_index;
@@ -91,35 +91,45 @@ fn extract_signal_with_byte_order(
 }
 
 fn main() {
+    const FILE: &str = "./data/Measurement_40";
+    let blf_file = FILE.to_owned() + ".blf";
+    let output_file = FILE.to_owned() + ".mf4";
+
     let dbc = load_dbc("./data/DBC/GXe_CAN1.dbc").unwrap();
-    let dbc_messages = dbc.messages();
+    let dbc_messages_map: HashMap<u32, &can_dbc::Message> = dbc.messages()
+        .iter()
+        .map(|msg| (msg.message_id().raw(), msg))
+        .collect();
 
-    let mut reader = BlfReader::new("./data/Measurement_32.blf").unwrap();
-    let messages = reader.read_messages().unwrap();
-    
-    let mut message_ids = HashSet::<u32>::new();
+    let mut reader = BlfReader::new(&blf_file).unwrap();
     let mut data_store = DataStore::new();
+    let mut first_timestamp = f64::MAX;
 
-    'message_loop: for msg in messages {
+    println!("Reading BLF file: {}", &blf_file);
+    'message_loop: for msg_result in tqdm(reader.messages()) {
+        let msg = match msg_result {
+            Ok(msg) => msg,
+            Err(e) => {
+                eprintln!("Error reading message: {}", e);
+                continue 'message_loop;
+            }
+        };
+
         let msg_bus = msg.channel;
         if msg_bus != 0 {
-            // println!("Skipping bus {}", msg_bus);
             continue 'message_loop;
         }
-        
-        message_ids.insert(msg.arbitration_id);
 
-        let mut found_dbc_msg: Option<&Message> = None;
-        'dbc_message_loop: for dbc_msg in dbc_messages {
-            if dbc_msg.message_id().raw() == msg.arbitration_id {
-                found_dbc_msg = Some(dbc_msg);
-                break 'dbc_message_loop;
-            }
+        let mut msg_timestamp = msg.timestamp;
+        if first_timestamp == f64::MAX {
+            first_timestamp = msg_timestamp;
         }
-        if found_dbc_msg.is_none() {
-            continue 'message_loop;
-        }
-        let found_dbc_msg = found_dbc_msg.unwrap();
+        msg_timestamp -= first_timestamp;
+
+        let found_dbc_msg: &Message = match dbc_messages_map.get(&msg.arbitration_id) {
+            Some(msg) => msg,
+            None => continue 'message_loop
+        };
 
         let msg_data = msg.data;
 
@@ -158,12 +168,12 @@ fn main() {
                     };
 
                     if is_signed {
-                        data_store.push_int(signal.name(), msg.timestamp, raw_value as i64);
+                        data_store.push_int(signal.name(), msg_timestamp, raw_value as i64);
                     } else {
-                        data_store.push_uint(signal.name(), msg.timestamp, raw_value);
+                        data_store.push_uint(signal.name(), msg_timestamp, raw_value);
                     }
                 },
-                can_dbc::MultiplexIndicator::MultiplexedSignal(mux_idx) => {
+                can_dbc::MultiplexIndicator::MultiplexedSignal(_) => {
                 },
                 can_dbc::MultiplexIndicator::Multiplexor => {
 
@@ -176,5 +186,17 @@ fn main() {
         }
     }
 
-    println!("{} messages and {} signals found", message_ids.len(), data_store.signal_count());
+    println!("{} signals found", data_store.signal_count());
+    
+    let mut child = std::process::Command::new("python")
+    .arg("script/write_mdf.py")
+    .arg(&output_file)
+    .stdin(Stdio::piped())
+    .spawn()
+    .expect("Failed to spawn python write_mdf.py");
+
+    if let Some(stdin) = child.stdin.take() {
+        data_store.write_to_stream(stdin).unwrap();
+    }
+    child.wait().expect("Failed to wait on child process");
 }

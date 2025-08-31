@@ -91,88 +91,8 @@ impl<R: Read + Seek> BlfReader<R> {
         })
     }
     
-    pub fn read_messages(&mut self) -> Result<Vec<CanMessage>> {
-        let mut all_messages = Vec::new();
-        
-        // Main loop - exactly like Python's __iter__ method
-        loop {
-            // Read object header base (16 bytes) - OBJ_HEADER_BASE_STRUCT
-            let mut obj_header_data = [0u8; 16];
-            match self.reader.read_exact(&mut obj_header_data) {
-                Ok(_) => {},
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    break;
-                },
-                Err(e) => return Err(e.into()),
-            }
-            
-            // Parse object header base
-            let signature = &obj_header_data[0..4];
-            if signature != b"LOBJ" {
-                return Err(anyhow!("Invalid object signature: {:?}", signature));
-            }
-            
-            let obj_size = u32::from_le_bytes([obj_header_data[8], obj_header_data[9], obj_header_data[10], obj_header_data[11]]);
-            let obj_type = u32::from_le_bytes([obj_header_data[12], obj_header_data[13], obj_header_data[14], obj_header_data[15]]);
-                        
-            // Read the object data (size - 16 bytes we already read)
-            let obj_data_size = obj_size - 16;
-            let mut obj_data = vec![0u8; obj_data_size as usize];
-            self.reader.read_exact(&mut obj_data)?;
-            
-            // Read padding bytes
-            let padding = obj_size % 4;
-            if padding > 0 {
-                let mut pad_buf = vec![0u8; padding as usize];
-                self.reader.read_exact(&mut pad_buf)?;
-            }
-            
-            // Only process LOG_CONTAINER objects - this is the key insight!
-            if obj_type == LOG_CONTAINER {
-                // Parse LOG_CONTAINER_STRUCT: compression method (2 bytes) + 6 padding + uncompressed_size (4 bytes) + 4 padding
-                if obj_data.len() < 16 {
-                    println!("Container data too short");
-                    continue;
-                }
-                
-                let compression_method = u16::from_le_bytes([obj_data[0], obj_data[1]]);
-                                
-                // Get container data (skip the 16-byte LOG_CONTAINER header)
-                let container_data = &obj_data[16..];
-                
-                // Decompress based on method
-                let decompressed_data = match compression_method {
-                    NO_COMPRESSION => {
-                        container_data.to_vec()
-                    },
-                    ZLIB_DEFLATE => {
-                        let mut decoder = ZlibDecoder::new(container_data);
-                        let mut decompressed = Vec::new();
-                        match decoder.read_to_end(&mut decompressed) {
-                            Ok(_) => {
-                                decompressed
-                            },
-                            Err(e) => {
-                                println!("  Decompression failed: {}", e);
-                                continue;
-                            }
-                        }
-                    },
-                    _ => {
-                        println!("  Unknown compression method: {}", compression_method);
-                        continue;
-                    }
-                };
-                
-                // Parse the decompressed container data
-                let messages = self.parse_container_data(&decompressed_data)?;
-                all_messages.extend(messages);
-            } else {
-                println!("  Skipping non-container object type: {}", obj_type);
-            }
-        }
-        
-        Ok(all_messages)
+    pub fn messages(&mut self) -> MessageIterator<'_, R> {
+        MessageIterator::new(self)
     }
     
     fn parse_container_data(&mut self, data: &[u8]) -> Result<Vec<CanMessage>> {
@@ -357,6 +277,142 @@ impl<R: Read + Seek> BlfReader<R> {
     }
 }
 
+pub struct MessageIterator<'a, R: Read + Seek> {
+    reader: &'a mut BlfReader<R>,
+    current_container_messages: Vec<CanMessage>,
+    current_message_index: usize,
+    finished: bool,
+}
+
+impl<'a, R: Read + Seek> MessageIterator<'a, R> {
+    fn new(reader: &'a mut BlfReader<R>) -> Self {
+        Self {
+            reader,
+            current_container_messages: Vec::new(),
+            current_message_index: 0,
+            finished: false,
+        }
+    }
+    
+    fn read_next_container(&mut self) -> Result<bool> {
+        if self.finished {
+            return Ok(false);
+        }
+        
+        loop {
+            // Read object header base (16 bytes) - OBJ_HEADER_BASE_STRUCT
+            let mut obj_header_data = [0u8; 16];
+            match self.reader.reader.read_exact(&mut obj_header_data) {
+                Ok(_) => {},
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    self.finished = true;
+                    return Ok(false);
+                },
+                Err(e) => return Err(e.into()),
+            }
+            
+            // Parse object header base
+            let signature = &obj_header_data[0..4];
+            if signature != b"LOBJ" {
+                return Err(anyhow!("Invalid object signature: {:?}", signature));
+            }
+            
+            let obj_size = u32::from_le_bytes([obj_header_data[8], obj_header_data[9], obj_header_data[10], obj_header_data[11]]);
+            let obj_type = u32::from_le_bytes([obj_header_data[12], obj_header_data[13], obj_header_data[14], obj_header_data[15]]);
+                        
+            // Read the object data (size - 16 bytes we already read)
+            let obj_data_size = obj_size - 16;
+            let mut obj_data = vec![0u8; obj_data_size as usize];
+            self.reader.reader.read_exact(&mut obj_data)?;
+            
+            // Read padding bytes
+            let padding = obj_size % 4;
+            if padding > 0 {
+                let mut pad_buf = vec![0u8; padding as usize];
+                self.reader.reader.read_exact(&mut pad_buf)?;
+            }
+            
+            // Only process LOG_CONTAINER objects
+            if obj_type == LOG_CONTAINER {
+                // Parse LOG_CONTAINER_STRUCT
+                if obj_data.len() < 16 {
+                    continue;
+                }
+                
+                let compression_method = u16::from_le_bytes([obj_data[0], obj_data[1]]);
+                                
+                // Get container data (skip the 16-byte LOG_CONTAINER header)
+                let container_data = &obj_data[16..];
+                
+                // Decompress based on method
+                let decompressed_data = match compression_method {
+                    NO_COMPRESSION => {
+                        container_data.to_vec()
+                    },
+                    ZLIB_DEFLATE => {
+                        let mut decoder = ZlibDecoder::new(container_data);
+                        let mut decompressed = Vec::new();
+                        match decoder.read_to_end(&mut decompressed) {
+                            Ok(_) => decompressed,
+                            Err(_) => continue,
+                        }
+                    },
+                    _ => continue,
+                };
+                
+                // Parse the decompressed container data
+                let messages = self.reader.parse_container_data(&decompressed_data)?;
+                if !messages.is_empty() {
+                    self.current_container_messages = messages;
+                    self.current_message_index = 0;
+                    return Ok(true);
+                }
+            }
+        }
+    }
+}
+
+impl<'a, R: Read + Seek> Iterator for MessageIterator<'a, R> {
+    type Item = Result<CanMessage>;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        // If we have messages from current container, return the next one
+        if self.current_message_index < self.current_container_messages.len() {
+            let message = self.current_container_messages[self.current_message_index].clone();
+            self.current_message_index += 1;
+            return Some(Ok(message));
+        }
+        
+        // Current container is exhausted, try to read next container
+        match self.read_next_container() {
+            Ok(true) => {
+                // Successfully read a new container with messages
+                if self.current_message_index < self.current_container_messages.len() {
+                    let message = self.current_container_messages[self.current_message_index].clone();
+                    self.current_message_index += 1;
+                    Some(Ok(message))
+                } else {
+                    None
+                }
+            },
+            Ok(false) => None, // No more data
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+// Convenience trait for collecting iterator results
+impl<'a, R: Read + Seek> MessageIterator<'a, R> {
+    #[allow(dead_code)]
+    pub fn collect(self) -> Result<Vec<CanMessage>> {
+        let mut messages = Vec::new();
+        for msg_result in self {
+            messages.push(msg_result?);
+        }
+        Ok(messages)
+    }
+}
+
 fn find_pattern(data: &[u8], pattern: &[u8]) -> Option<usize> {
     data.windows(pattern.len()).position(|window| window == pattern)
 }
@@ -387,17 +443,3 @@ fn systemtime_to_timestamp(data: &[u8]) -> f64 {
     
     timestamp
 }
-
-// fn dlc2len(dlc: u8) -> u8 {
-//     match dlc {
-//         0..=8 => dlc,
-//         9 => 12,
-//         10 => 16,
-//         11 => 20,
-//         12 => 24,
-//         13 => 32,
-//         14 => 48,
-//         15 => 64,
-//         _ => 8,
-//     }
-// }

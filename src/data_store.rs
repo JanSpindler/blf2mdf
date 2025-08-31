@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::any::Any;
+use std::io::{BufWriter, Write};
 
 #[derive(Debug, Clone)]
 pub struct DataPoint<T> {
@@ -37,43 +38,8 @@ impl DataStore {
         }
     }
     
-    pub fn get<T: 'static>(&self, key: &str) -> Option<&Vec<DataPoint<T>>> {
-        self.data.get(key)?.downcast_ref::<Vec<DataPoint<T>>>()
-    }
-    
-    pub fn get_mut<T: 'static>(&mut self, key: &str) -> Option<&mut Vec<DataPoint<T>>> {
-        self.data.get_mut(key)?.downcast_mut::<Vec<DataPoint<T>>>()
-    }
-    
-    pub fn len(&self, key: &str) -> usize {
-        // This is tricky with Any - we'll try common types
-        if let Some(vec) = self.data.get(key) {
-            if let Some(v) = vec.downcast_ref::<Vec<DataPoint<i64>>>() {
-                return v.len();
-            }
-            if let Some(v) = vec.downcast_ref::<Vec<DataPoint<u64>>>() {
-                return v.len();
-            }
-            if let Some(v) = vec.downcast_ref::<Vec<DataPoint<f64>>>() {
-                return v.len();
-            }
-            if let Some(v) = vec.downcast_ref::<Vec<DataPoint<String>>>() {
-                return v.len();
-            }
-        }
-        0
-    }
-
     pub fn signal_count(&self) -> usize {
         self.data.len()
-    }
-
-    pub fn contains_key(&self, key: &str) -> bool {
-        self.data.contains_key(key)
-    }
-    
-    pub fn keys(&self) -> Vec<&String> {
-        self.data.keys().collect()
     }
     
     // Convenience methods for common types
@@ -85,28 +51,103 @@ impl DataStore {
         self.push(key, timestamp, value);
     }
     
+    #[allow(dead_code)]
     pub fn push_float(&mut self, key: &str, timestamp: f64, value: f64) {
         self.push(key, timestamp, value);
     }
-    
+
+    #[allow(dead_code)]
     pub fn push_string(&mut self, key: &str, timestamp: f64, value: String) {
         self.push(key, timestamp, value);
     }
-    
-    pub fn get_ints(&self, key: &str) -> Option<&Vec<DataPoint<i64>>> {
-        self.get::<i64>(key)
-    }
-    
-    pub fn get_uints(&self, key: &str) -> Option<&Vec<DataPoint<u64>>> {
-        self.get::<u64>(key)
+
+    fn sort_by_timestamp(&mut self) {
+        // Sort all vectors by timestamp in ascending order
+        for (_, data) in &mut self.data {
+            if let Some(vec) = data.downcast_mut::<Vec<DataPoint<i64>>>() {
+                vec.sort_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal));
+            } else if let Some(vec) = data.downcast_mut::<Vec<DataPoint<u64>>>() {
+                vec.sort_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal));
+            } else if let Some(vec) = data.downcast_mut::<Vec<DataPoint<f64>>>() {
+                vec.sort_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal));
+            } else if let Some(vec) = data.downcast_mut::<Vec<DataPoint<String>>>() {
+                vec.sort_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal));
+            }
+        }
     }
 
-    pub fn get_floats(&self, key: &str) -> Option<&Vec<DataPoint<f64>>> {
-        self.get::<f64>(key)
-    }
-    
-    pub fn get_strings(&self, key: &str) -> Option<&Vec<DataPoint<String>>> {
-        self.get::<String>(key)
+    pub fn write_to_stream<W: Write>(&mut self, writer: W) -> Result<(), Box<dyn std::error::Error>> {
+        self.sort_by_timestamp();
+        
+        // Use a large buffer for batched writes (1MB buffer)
+        let mut buf_writer = BufWriter::with_capacity(1024 * 1024, writer);
+        
+        // Write magic header to identify binary format
+        buf_writer.write_all(b"BLF2MDF\x01")?; // 8 bytes: magic + version
+        
+        // Write signal count as 4-byte little-endian
+        buf_writer.write_all(&(self.data.len() as u32).to_le_bytes())?;
+        
+        for (key, data) in &self.data {
+            // Write signal name length and name
+            let key_bytes = key.as_bytes();
+            buf_writer.write_all(&(key_bytes.len() as u16).to_le_bytes())?;
+            buf_writer.write_all(key_bytes)?;
+            
+            // Determine type and write data
+            if let Some(vec) = data.downcast_ref::<Vec<DataPoint<i64>>>() {
+                buf_writer.write_all(&[1u8])?; // Type marker: 1 = i64
+                buf_writer.write_all(&(vec.len() as u32).to_le_bytes())?;
+                
+                // Batch write all data points for this signal
+                let mut batch = Vec::with_capacity(vec.len() * 16); // 16 bytes per point
+                for point in vec {
+                    batch.extend_from_slice(&point.timestamp.to_le_bytes()); // 8 bytes
+                    batch.extend_from_slice(&point.value.to_le_bytes());     // 8 bytes
+                }
+                buf_writer.write_all(&batch)?;
+                
+            } else if let Some(vec) = data.downcast_ref::<Vec<DataPoint<u64>>>() {
+                buf_writer.write_all(&[2u8])?; // Type marker: 2 = u64
+                buf_writer.write_all(&(vec.len() as u32).to_le_bytes())?;
+                
+                // Batch write all data points for this signal
+                let mut batch = Vec::with_capacity(vec.len() * 16); // 16 bytes per point
+                for point in vec {
+                    batch.extend_from_slice(&point.timestamp.to_le_bytes()); // 8 bytes
+                    batch.extend_from_slice(&point.value.to_le_bytes());     // 8 bytes
+                }
+                buf_writer.write_all(&batch)?;
+                
+            } else if let Some(vec) = data.downcast_ref::<Vec<DataPoint<f64>>>() {
+                buf_writer.write_all(&[3u8])?; // Type marker: 3 = f64
+                buf_writer.write_all(&(vec.len() as u32).to_le_bytes())?;
+                
+                // Batch write all data points for this signal
+                let mut batch = Vec::with_capacity(vec.len() * 16); // 16 bytes per point
+                for point in vec {
+                    batch.extend_from_slice(&point.timestamp.to_le_bytes()); // 8 bytes
+                    batch.extend_from_slice(&point.value.to_le_bytes());     // 8 bytes
+                }
+                buf_writer.write_all(&batch)?;
+                
+            } else if let Some(vec) = data.downcast_ref::<Vec<DataPoint<String>>>() {
+                buf_writer.write_all(&[4u8])?; // Type marker: 4 = string
+                buf_writer.write_all(&(vec.len() as u32).to_le_bytes())?;
+                
+                // Strings can't be batched as easily due to variable length
+                // But we can still use the buffered writer for better performance
+                for point in vec {
+                    buf_writer.write_all(&point.timestamp.to_le_bytes())?; // 8 bytes
+                    let value_bytes = point.value.as_bytes();
+                    buf_writer.write_all(&(value_bytes.len() as u16).to_le_bytes())?; // 2 bytes
+                    buf_writer.write_all(value_bytes)?;
+                }
+            }
+        }
+        
+        buf_writer.flush()?;
+        Ok(())
     }
 }
 

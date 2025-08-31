@@ -1,9 +1,11 @@
 use can_dbc::{Message, DBC, SignalExtendedValueType, ValueType, ByteOrder};
-use std::fs::File;
+use std::fs::{read_dir, File};
 use std::io::Read;
 use std::process::Stdio;
 use tqdm::tqdm;
 use std::collections::HashMap;
+use rfd::FileDialog;
+use std::env;
 
 mod blf_reader;
 use blf_reader::BlfReader;
@@ -90,18 +92,23 @@ fn extract_signal_with_byte_order(
     Some(result)
 }
 
-fn main() {
-    const FILE: &str = "./data/Measurement_40";
-    let blf_file = FILE.to_owned() + ".blf";
-    let output_file = FILE.to_owned() + ".mf4";
+fn process_file(file_path: &str, dbc: &DBC) {
+    let blf_file = file_path.to_owned() + ".blf";
+    let output_file = file_path.to_owned() + ".mf4";
 
-    let dbc = load_dbc("./data/DBC/GXe_CAN1.dbc").unwrap();
     let dbc_messages_map: HashMap<u32, &can_dbc::Message> = dbc.messages()
         .iter()
         .map(|msg| (msg.message_id().raw(), msg))
         .collect();
 
-    let mut reader = BlfReader::new(&blf_file).unwrap();
+    let mut reader = match BlfReader::new(&blf_file) {
+        Ok(reader) => reader,
+        Err(e) => {
+            eprintln!("Error opening BLF file {file_path}: {}", e);
+            return;
+        }
+    };
+
     let mut data_store = DataStore::new();
     let mut first_timestamp = f64::MAX;
 
@@ -199,4 +206,37 @@ fn main() {
         data_store.write_to_stream(stdin).unwrap();
     }
     child.wait().expect("Failed to wait on child process");
+}
+
+fn main() {
+    let blf_folder = FileDialog::new()
+        .set_directory(env::current_dir().unwrap())
+        .pick_folder()
+        .unwrap();
+
+    let dbc_file = FileDialog::new()
+        .set_directory(&blf_folder)
+        .add_filter("DBC Files", &["dbc"])
+        .pick_file()
+        .unwrap();
+
+    let dbc = load_dbc(dbc_file.as_path().to_str().unwrap()).unwrap();
+
+    let entries = read_dir(&blf_folder).expect("Failed to read directory");
+    for entry in entries {
+        let path = entry.expect("Failed to get entry").path();
+        if !path.is_file() {
+            continue;
+        }
+
+        if path.extension().is_none() {
+            continue;
+        }
+
+        if path.extension().unwrap() != "blf" {
+            continue;
+        }
+
+        process_file(path.with_extension("").to_str().unwrap(), &dbc);
+    }
 }

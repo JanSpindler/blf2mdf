@@ -1,3 +1,6 @@
+import logging
+logging.getLogger('canmatrix.formats').setLevel(logging.ERROR)
+
 import asammdf
 import sys
 import tqdm

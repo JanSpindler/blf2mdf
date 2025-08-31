@@ -1,6 +1,6 @@
 use can_dbc::{Message, DBC, SignalExtendedValueType, ValueType, ByteOrder};
 use std::fs::{read_dir, File};
-use std::io::Read;
+use std::io::{self, Read};
 use std::process::Stdio;
 use tqdm::tqdm;
 use std::collections::HashMap;
@@ -92,14 +92,21 @@ fn extract_signal_with_byte_order(
     Some(result)
 }
 
-fn process_file(file_path: &str, dbc: &DBC) {
+fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
     let blf_file = file_path.to_owned() + ".blf";
     let output_file = file_path.to_owned() + ".mf4";
 
-    let dbc_messages_map: HashMap<u32, &can_dbc::Message> = dbc.messages()
-        .iter()
-        .map(|msg| (msg.message_id().raw(), msg))
-        .collect();
+    let mut dbc_messages_maps = Vec::<HashMap<u32, &can_dbc::Message>>::new();
+    for bus_dbcs in dbcs {
+        dbc_messages_maps.push(
+            bus_dbcs.iter()
+            .flat_map(|dbc| dbc.messages())
+            .map(|msg| (msg.message_id().raw(), msg))
+            .collect()
+        );
+    }
+
+    let signal_bus_map: HashMap<String, u32> = HashMap::new();
 
     let mut reader = match BlfReader::new(&blf_file) {
         Ok(reader) => reader,
@@ -122,10 +129,8 @@ fn process_file(file_path: &str, dbc: &DBC) {
             }
         };
 
-        let msg_bus = msg.channel;
-        if msg_bus != 0 {
-            continue 'message_loop;
-        }
+        let bus_idx = msg.channel as usize;
+        let bus_dbcs = &dbcs[bus_idx];
 
         let mut msg_timestamp = msg.timestamp;
         if first_timestamp == f64::MAX {
@@ -133,7 +138,7 @@ fn process_file(file_path: &str, dbc: &DBC) {
         }
         msg_timestamp -= first_timestamp;
 
-        let found_dbc_msg: &Message = match dbc_messages_map.get(&msg.arbitration_id) {
+        let found_dbc_msg: &Message = match dbc_messages_maps[bus_idx].get(&msg.arbitration_id) {
             Some(msg) => msg,
             None => continue 'message_loop
         };
@@ -141,12 +146,24 @@ fn process_file(file_path: &str, dbc: &DBC) {
         let msg_data = msg.data;
 
         'signal_loop: for signal in found_dbc_msg.signals() {
-            let is_float = match dbc.extended_value_type_for_signal(
-                    *found_dbc_msg.message_id(), signal.name()) {
-                Some(v) => *v != SignalExtendedValueType::SignedOrUnsignedInteger,
-                None => false,
-            };
-            
+            // Check if we want to skip because signal name already found on another bus
+            if let Some(signal_bus_idx) = signal_bus_map.get(signal.name()) {
+                if bus_idx != *signal_bus_idx as usize {
+                    continue 'signal_loop;
+                }
+            }
+
+            // Check if float or signed
+            let mut is_float = false;
+            for dbc in bus_dbcs {
+                if let Some(v) = dbc.extended_value_type_for_signal(
+                        *found_dbc_msg.message_id(), signal.name()) {
+                    if *v != SignalExtendedValueType::SignedOrUnsignedInteger {
+                        is_float = true;
+                        break;
+                    }
+                }
+            }
             let is_signed = *signal.value_type() == ValueType::Signed;
 
             if is_float {
@@ -209,18 +226,35 @@ fn process_file(file_path: &str, dbc: &DBC) {
 }
 
 fn main() {
+    println!("Enter the number of CAN busses: ");
+    let mut num_busses = String::new();
+    io::stdin().read_line(&mut num_busses).unwrap();
+    let num_busses: usize = num_busses.trim().parse().unwrap();
+    if num_busses == 0 {
+        println!("Number of CAN busses must be greater than 0");
+        return;
+    }
+
     let blf_folder = FileDialog::new()
         .set_directory(env::current_dir().unwrap())
         .pick_folder()
         .unwrap();
 
-    let dbc_file = FileDialog::new()
-        .set_directory(&blf_folder)
-        .add_filter("DBC Files", &["dbc"])
-        .pick_file()
-        .unwrap();
+    let mut dbcs = Vec::<Vec<DBC>>::new();
+    for _ in 0..num_busses {
+        let dbc_files = FileDialog::new()
+            .set_directory(&blf_folder)
+            .add_filter("DBC Files", &["dbc"])
+            .pick_files()
+            .unwrap();
 
-    let dbc = load_dbc(dbc_file.as_path().to_str().unwrap()).unwrap();
+        let mut bus_dbcs = Vec::<DBC>::new();
+        for dbc_file in dbc_files {
+            let dbc = load_dbc(dbc_file.as_path().to_str().unwrap()).unwrap();
+            bus_dbcs.push(dbc);
+        }
+        dbcs.push(bus_dbcs);
+    }
 
     let entries = read_dir(&blf_folder).expect("Failed to read directory");
     for entry in entries {
@@ -237,6 +271,6 @@ fn main() {
             continue;
         }
 
-        process_file(path.with_extension("").to_str().unwrap(), &dbc);
+        process_file(path.with_extension("").to_str().unwrap(), &dbcs);
     }
 }

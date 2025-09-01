@@ -16,7 +16,7 @@
 
 ## Installation
 
-'''bash
+```bash
 git clone https://github.com/JanSpindler/blf2mdf.git
 cargo install --path blf2mdf
-'''
+```

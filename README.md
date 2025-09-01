@@ -1,22 +1,22 @@
 # CAN Bus Log Processor
 
-This application processes CAN bus log files (`.blf`) and associates them with corresponding DBC files to decode the data. It allows users to select log files and DBC files interactively and processes the data for analysis.
-
 ## Features
 
-- Interactive file selection for `.blf` and `.dbc` files.
-- Supports multiple CAN busses.
-- Decodes CAN bus log data using DBC files.
-- Outputs processed data for further analysis.
+- Load multiple *.blf files
+- Select number of CAN busses
+- Select multiple *.dbc files per CAN bus
+- Interpret binary data using CAN database in readable format
+- Store as *.mf4
 
 ## Prerequisites
 
-- Rust (latest stable version)
-- A terminal or command-line interface
-- `.blf` log files and `.dbc` files for decoding
+- Rust
+- Python
+- pip
 
 ## Installation
 
-'''sh
-cargo install --path .
+'''bash
+git clone https://github.com/JanSpindler/blf2mdf.git
+cargo install --path blf2mdf
 '''

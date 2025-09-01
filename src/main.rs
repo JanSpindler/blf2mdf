@@ -327,6 +327,9 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
 
         // Get bus DBCs
         let bus_idx = msg.channel as usize;
+        if bus_idx >= dbcs.len() {
+            continue 'message_loop;
+        }
         let bus_dbcs = &dbcs[bus_idx];
         let msg_id = msg.arbitration_id;
 

@@ -30,7 +30,7 @@ fn load_dbc(path_str: &str) -> Result<DBC, Box<dyn std::error::Error>> {
 }
 
 fn extract_signal_raw(
-        data: &Vec<u8>, 
+        data: &[u8], 
         start_bit: i64, 
         bit_count: i64, 
         is_big_endian: bool) -> Option<u64> {
@@ -92,22 +92,94 @@ fn extract_signal_raw(
     Some(result)
 }
 
+fn process_signal(
+    msg_data: &[u8],
+    start_bit: i64,
+    bit_count: i64,
+    is_big_endian: bool,
+    is_signed: bool,
+    store_as_float: bool,
+    factor: f64,
+    offset: f64,
+    signal_name: &str,
+    msg_timestamp: f64,
+    data_store: &mut DataStore,
+) {
+    let raw_value = match extract_signal_raw(msg_data, start_bit, bit_count, is_big_endian) {
+        Some(v) => v,
+        None => {
+            // println!("Failed to extract signal {} from message ID {}", signal_name, msg.arbitration_id);
+            return;
+        }
+    };
+
+    if is_signed {
+        // Convert raw value to signed using two's complement
+        let signed_value = if bit_count < 64 {
+            // Create mask for the number of bits
+            let mask = (1u64 << bit_count) - 1;
+            let masked_value = raw_value & mask;
+
+            // Check if sign bit is set
+            let sign_bit = 1u64 << (bit_count - 1);
+            if masked_value & sign_bit != 0 {
+                // Negative value - extend sign bits
+                let sign_extension = !((1u64 << bit_count) - 1);
+                (masked_value | sign_extension) as i64
+            } else {
+                // Positive value
+                masked_value as i64
+            }
+        } else {
+            raw_value as i64
+        };
+
+        if store_as_float {
+            let physical_value = (signed_value as f64) * factor + offset;
+            data_store.push_float(signal_name, msg_timestamp, physical_value);
+        } else {
+            let physical_value = (factor as i64) * signed_value + (offset as i64);
+            data_store.push_int(signal_name, msg_timestamp, physical_value);
+        }
+    } else {
+        if store_as_float {
+            let physical_value = (raw_value as f64) * factor + offset;
+            data_store.push_float(signal_name, msg_timestamp, physical_value);
+        } else {
+            let physical_value = (factor as u64) * raw_value + (offset as u64);
+            data_store.push_uint(signal_name, msg_timestamp, physical_value);
+        }
+    }
+}
+
 fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
+    // File names
     let blf_file = file_path.to_owned() + ".blf";
     let output_file = file_path.to_owned() + ".mf4";
 
+    // Create message ID to DBC message map for each bus
     let mut dbc_messages_maps = Vec::<HashMap<u32, &can_dbc::Message>>::new();
+    let mut dbc_map: Vec<HashMap<u32, &DBC>> = Vec::<HashMap<u32, &DBC>>::new();
     for bus_dbcs in dbcs {
-        dbc_messages_maps.push(
-            bus_dbcs.iter()
-            .flat_map(|dbc| dbc.messages())
-            .map(|msg| (msg.message_id().raw(), msg))
-            .collect()
-        );
+        let mut bus_dbc_messages_map = HashMap::<u32, &can_dbc::Message>::new();
+        let mut bus_dbc_map = HashMap::<u32, &DBC>::new();
+        
+        for dbc in bus_dbcs {
+            for msg in dbc.messages() {
+                let msg_id = msg.message_id().raw();
+                bus_dbc_messages_map.insert(msg_id, msg);
+                bus_dbc_map.insert(msg_id, dbc);
+            }
+        }
+        
+        dbc_messages_maps.push(bus_dbc_messages_map);
+        dbc_map.push(bus_dbc_map);
     }
 
+    // Init signal to bus map to avoid duplicates
     let signal_bus_map: HashMap<String, u32> = HashMap::new();
 
+    // Start reading BLF file
     let mut reader = match BlfReader::new(&blf_file) {
         Ok(reader) => reader,
         Err(e) => {
@@ -116,11 +188,16 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
         }
     };
 
+    // Init data store
     let mut data_store = DataStore::new();
+
+    // Init first timestamp
     let mut first_timestamp = f64::MAX;
 
+    // Iterate over all messages in blf file
     println!("Reading BLF file: {}", &blf_file);
     'message_loop: for msg_result in tqdm(reader.messages()) {
+        // Get raw can message
         let msg = match msg_result {
             Ok(msg) => msg,
             Err(e) => {
@@ -129,23 +206,52 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
             }
         };
 
+        // Get bus DBCs
         let bus_idx = msg.channel as usize;
         let bus_dbcs = &dbcs[bus_idx];
+        let msg_id = msg.arbitration_id;
 
+        // Get timestamp
         let mut msg_timestamp = msg.timestamp;
         if first_timestamp == f64::MAX {
             first_timestamp = msg_timestamp;
         }
         msg_timestamp -= first_timestamp;
 
-        let found_dbc_msg: &Message = match dbc_messages_maps[bus_idx].get(&msg.arbitration_id) {
+        // Get dbc for message
+        let dbc_msg: &Message = match dbc_messages_maps[bus_idx].get(&msg_id) {
             Some(msg) => msg,
             None => continue 'message_loop
         };
 
+        // Get message raw data
         let msg_data = msg.data;
 
-        'signal_loop: for signal in found_dbc_msg.signals() {
+        // Get mux signal
+        let dbc = dbc_map[bus_idx].get(&msg_id).unwrap();
+        let mux_signal = dbc.message_multiplexor_switch(*dbc_msg.message_id());
+        let current_mux_value = match mux_signal {
+            Ok(Some(mux_signal)) => {
+                let start_bit = *mux_signal.start_bit() as i64;
+                let bit_count = *mux_signal.signal_size() as i64;
+                let is_big_endian = *mux_signal.byte_order() == ByteOrder::BigEndian;
+                match extract_signal_raw(
+                        &msg_data, start_bit, bit_count, is_big_endian) {
+                    Some(v) => v,
+                    None => {
+                        // println!("Failed to extract mux signal {} from message ID {}", mux_signal.name(), msg.arbitration_id);
+                        continue 'message_loop;
+                    }
+                }
+            },
+            Ok(None) => 0,
+            Err(_) => {
+                continue 'message_loop;
+            }
+        };
+
+        // Iterate over all signals in message
+        'signal_loop: for signal in dbc_msg.signals() {
             // Check if we want to skip because signal name already found on another bus
             if let Some(signal_bus_idx) = signal_bus_map.get(signal.name()) {
                 if bus_idx != *signal_bus_idx as usize {
@@ -157,7 +263,7 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
             let mut is_float = false;
             for dbc in bus_dbcs {
                 if let Some(v) = dbc.extended_value_type_for_signal(
-                        *found_dbc_msg.message_id(), signal.name()) {
+                        *dbc_msg.message_id(), signal.name()) {
                     if *v != SignalExtendedValueType::SignedOrUnsignedInteger {
                         is_float = true;
                         break;
@@ -179,65 +285,24 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
             let store_as_float = is_float || (factor.fract() != 0.0) || (offset.fract() != 0.0);
 
             match signal.multiplexer_indicator() {
-                can_dbc::MultiplexIndicator::Plain => {
-                    let raw_value = match extract_signal_raw(
-                            &msg_data, start_bit, bit_count, is_big_endian) {
-                        Some(v) => v,
-                        None => {
-                            // println!("Failed to extract signal {} from message ID {}", signal.name(), msg.arbitration_id);
-                            continue 'signal_loop;
-                        }
-                    };
-
-                    if is_signed {
-                        // Convert raw value to signed using two's complement
-                        let signed_value = if bit_count < 64 {
-                            // Create mask for the number of bits
-                            let mask = (1u64 << bit_count) - 1;
-                            let masked_value = raw_value & mask;
-                            
-                            // Check if sign bit is set
-                            let sign_bit = 1u64 << (bit_count - 1);
-                            if masked_value & sign_bit != 0 {
-                                // Negative value - extend sign bits
-                                let sign_extension = !((1u64 << bit_count) - 1);
-                                (masked_value | sign_extension) as i64
-                            } else {
-                                // Positive value
-                                masked_value as i64
-                            }
-                        } else {
-                            raw_value as i64
-                        };
-
-                        if store_as_float {
-                            let physical_value = (signed_value as f64) * factor + offset;
-                            data_store.push_float(signal.name(), msg_timestamp, physical_value);
-                        } else {
-                            let physical_value = (factor as i64) * signed_value + (offset as i64);
-                            data_store.push_int(signal.name(), msg_timestamp, physical_value);
-                        }
-                    } else {
-                        if store_as_float {
-                            let physical_value = (raw_value as f64) * factor + offset;
-                            data_store.push_float(signal.name(), msg_timestamp, physical_value);
-                        } else {
-                            let physical_value = (factor as u64) * raw_value + (offset as u64);
-                            data_store.push_uint(signal.name(), msg_timestamp, physical_value);
-                        }
+                can_dbc::MultiplexIndicator::Plain | can_dbc::MultiplexIndicator::Multiplexor => {
+                    process_signal(
+                        &msg_data, start_bit, bit_count, is_big_endian, is_signed, store_as_float, 
+                        factor, offset, signal.name(), msg_timestamp, &mut data_store);
+                },
+                can_dbc::MultiplexIndicator::MultiplexedSignal(mux_idx) => {
+                    if *mux_idx == current_mux_value {
+                        process_signal(
+                            &msg_data, start_bit, bit_count, is_big_endian, is_signed, store_as_float, 
+                            factor, offset, signal.name(), msg_timestamp, &mut data_store);
                     }
-                },
-                can_dbc::MultiplexIndicator::MultiplexedSignal(_) => {
-                },
-                can_dbc::MultiplexIndicator::Multiplexor => {
-
                 },
                 mux_ind => {
                     println!("Can't handle MultiplexIndicator {:?}", mux_ind);
                     continue 'signal_loop;
                 }
             }
-        }
+        };
     }
 
     println!("{} signals found", data_store.signal_count());

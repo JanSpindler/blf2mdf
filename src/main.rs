@@ -1,5 +1,5 @@
 use can_dbc::{Message, DBC, SignalExtendedValueType, ValueType, ByteOrder};
-use std::fs::{read_dir, File};
+use std::fs::File;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::Stdio;

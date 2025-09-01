@@ -445,6 +445,7 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
 }
 
 fn main() {
+    // Get number of busses
     println!("Enter the number of CAN busses: ");
     let mut num_busses = String::new();
     io::stdin().read_line(&mut num_busses).unwrap();
@@ -454,10 +455,13 @@ fn main() {
         return;
     }
 
-    let blf_folder = FileDialog::new()
+    // Get blf files
+    let blf_files = FileDialog::new()
         .set_directory(env::current_dir().unwrap())
-        .pick_folder()
+        .add_filter("BLF Files", &["blf"])
+        .pick_files()
         .unwrap();
+    let blf_folder = blf_files[0].parent().unwrap();
 
     let mut dbcs = Vec::<Vec<DBC>>::new();
     let mut num_total_dbcs = 0;
@@ -484,21 +488,8 @@ fn main() {
         return;
     }
 
-    let entries = read_dir(&blf_folder).expect("Failed to read directory");
-    for entry in entries {
-        let path = entry.expect("Failed to get entry").path();
-        if !path.is_file() {
-            continue;
-        }
-
-        if path.extension().is_none() {
-            continue;
-        }
-
-        if path.extension().unwrap() != "blf" {
-            continue;
-        }
-
+    for entry in blf_files {
+        let path = entry.as_path();
         process_file(path.with_extension("").to_str().unwrap(), &dbcs);
     }
 }

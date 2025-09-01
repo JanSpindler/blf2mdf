@@ -1,6 +1,7 @@
 use can_dbc::{Message, DBC, SignalExtendedValueType, ValueType, ByteOrder};
 use std::fs::{read_dir, File};
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::process::Stdio;
 use tqdm::tqdm;
 use std::collections::HashMap;
@@ -459,19 +460,28 @@ fn main() {
         .unwrap();
 
     let mut dbcs = Vec::<Vec<DBC>>::new();
+    let mut num_total_dbcs = 0;
     for _ in 0..num_busses {
-        let dbc_files = FileDialog::new()
+        let dbc_files = match FileDialog::new()
             .set_directory(&blf_folder)
             .add_filter("DBC Files", &["dbc"])
-            .pick_files()
-            .unwrap();
+            .pick_files() {
+            Some(files) => files,
+            None => Vec::<PathBuf>::new()
+        };
 
         let mut bus_dbcs = Vec::<DBC>::new();
         for dbc_file in dbc_files {
             let dbc = load_dbc(dbc_file.as_path().to_str().unwrap()).unwrap();
             bus_dbcs.push(dbc);
         }
+        num_total_dbcs += bus_dbcs.len();
         dbcs.push(bus_dbcs);
+    }
+
+    if num_total_dbcs == 0 {
+        println!("No .dbc files loaded");
+        return;
     }
 
     let entries = read_dir(&blf_folder).expect("Failed to read directory");

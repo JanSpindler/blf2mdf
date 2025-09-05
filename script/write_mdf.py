@@ -12,18 +12,14 @@ from io import BufferedReader
 def load_from_stdin():
     """
     Optimized binary reading with larger buffers and timestamp handling.
-    Supports both v1 (without units) and v2 (with units) binary formats.
+    Supports v1 (no units), v2 (with units), and v3 (with units and value_tables) binary formats.
     """
     # Use buffered reader for better performance
     reader = BufferedReader(sys.stdin.buffer, buffer_size=1024*1024)  # 1MB buffer
     
     # Read magic header
     magic = reader.read(8)
-    if magic == b"BLF2MDF\x01":
-        has_units = False
-    elif magic == b"BLF2MDF\x02":
-        has_units = True
-    else:
+    if not magic == b"BLF2MDF\x03":
         raise ValueError("Invalid binary format")
     
     # Read signal count
@@ -34,12 +30,19 @@ def load_from_stdin():
         name_len = struct.unpack('<H', reader.read(2))[0]
         signal_name = reader.read(name_len).decode('utf-8')
         
-        # Read unit (only in v2 format)
-        unit = ""
-        if has_units:
-            unit_len = struct.unpack('<H', reader.read(2))[0]
-            unit = reader.read(unit_len).decode('utf-8')
+        # Read unit (only in v2+ format)
+        unit_len = struct.unpack('<H', reader.read(2))[0]
+        unit = reader.read(unit_len).decode('utf-8')
         
+        # Read value table (only in v3+ format)
+        value_table = {}
+        value_table_count = struct.unpack('<H', reader.read(2))[0]
+        for _ in range(value_table_count):
+            value = struct.unpack('<q', reader.read(8))[0]  # i64
+            desc_len = struct.unpack('<H', reader.read(2))[0]
+            description = reader.read(desc_len).decode('utf-8')
+            value_table[value] = description
+
         # Read type marker
         type_marker = struct.unpack('B', reader.read(1))[0]
         
@@ -78,7 +81,7 @@ def load_from_stdin():
             elif type_marker == 3:  # f64
                 values = data_array[:, 8:].view(np.float64).flatten()
             
-            yield signal_name, timestamps, values, unit
+            yield signal_name, timestamps, values, unit, value_table
             
         elif type_marker == 4:  # string - variable length, can't batch as easily
             timestamps = []
@@ -95,7 +98,7 @@ def load_from_stdin():
                 timestamps.append(timestamp)
                 values.append(value)
             
-            yield signal_name, np.array(timestamps), np.array(values), unit
+            yield signal_name, np.array(timestamps), np.array(values), unit, value_table
         
         else:
             # Unknown type marker - skip this signal
@@ -114,12 +117,20 @@ if __name__ == '__main__':
     mdf = asammdf.MDF()
 
     # Process signals from stdin
-    for signal_name, timestamps, values, unit in tqdm.tqdm(load_from_stdin()):
+    for signal_name, timestamps, values, unit, value_table in tqdm.tqdm(load_from_stdin()):
+        conversion = None
+        if value_table:
+            conversion = {}
+            for idx, (v, t) in enumerate(value_table.items()):
+                conversion[f'val_{idx}'] = v
+                conversion[f'text_{idx}'] = t
+
         signal = asammdf.Signal(
             samples=values,
             timestamps=timestamps,
             name=signal_name,
-            unit=unit
+            unit=unit,
+            conversion=conversion
         )
         mdf.append(signal)
 

@@ -168,18 +168,37 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
     // Add all signal units to data store
     let mut dbc_messages_maps = Vec::<HashMap<u32, &can_dbc::Message>>::new();
     let mut dbc_map: Vec<HashMap<u32, &DBC>> = Vec::<HashMap<u32, &DBC>>::new();
-    for bus_dbcs in dbcs {
+    let mut signal_bus_map: HashMap<String, u32> = HashMap::new();
+    for (bus_idx, bus_dbcs) in dbcs.iter().enumerate() {
         let mut bus_dbc_messages_map = HashMap::<u32, &can_dbc::Message>::new();
         let mut bus_dbc_map = HashMap::<u32, &DBC>::new();
-        
+
+        // Iterate over all dbcs for this bus
         for dbc in bus_dbcs {
+            // Iterate over all messages in dbc
             for msg in dbc.messages() {
                 let msg_id = msg.message_id().raw();
                 bus_dbc_messages_map.insert(msg_id, msg);
                 bus_dbc_map.insert(msg_id, dbc);
 
+                // Iterate over all signals in this message
                 for sig in msg.signals() {
                     data_store.set_unit(sig.name(), sig.unit());
+                    
+                    if !signal_bus_map.contains_key(sig.name()) {
+                        signal_bus_map.insert(sig.name().clone(), bus_idx as u32);
+
+                        match dbc.value_descriptions_for_signal(*msg.message_id(), sig.name()) {
+                            Some(value_table) => {
+                                let mut table = HashMap::<i64, String>::new();
+                                for val_desc in value_table {
+                                    table.insert(*val_desc.a() as i64, val_desc.b().clone());
+                                }
+                                data_store.set_value_table(sig.name(), table);
+                            },
+                            None => {}
+                        }
+                    }
                 }
             }
         }
@@ -189,7 +208,6 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
     }
 
     // Init signal to bus map to avoid duplicates
-    let signal_bus_map: HashMap<String, u32> = HashMap::new();
 
     // Start reading BLF file
     let mut reader = match BlfReader::new(&blf_file) {
@@ -251,7 +269,6 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
                         &msg_data, start_bit, bit_count, is_big_endian) {
                     Some(v) => v,
                     None => {
-                        // println!("Failed to extract mux signal {} from message ID {}", mux_signal.name(), msg.arbitration_id);
                         continue 'message_loop;
                     }
                 }
@@ -270,7 +287,7 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
                     continue 'signal_loop;
                 }
             }
-
+            
             // Check if float or signed
             let mut is_float = false;
             for dbc in bus_dbcs {
@@ -284,10 +301,12 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
             }
             let is_signed = *signal.value_type() == ValueType::Signed;
 
+            // Skip if float
             if is_float {
                 continue 'signal_loop;
             }
 
+            // Get signal info
             let start_bit = *signal.start_bit() as i64;
             let bit_count = *signal.signal_size() as i64;
             let is_big_endian = *signal.byte_order() == ByteOrder::BigEndian;

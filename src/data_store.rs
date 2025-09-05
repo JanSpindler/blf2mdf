@@ -17,19 +17,25 @@ impl<T> DataPoint<T> {
 #[derive(Debug)]
 pub struct DataStore {
     data: HashMap<String, Box<dyn Any>>,
-    units: HashMap<String, String>
+    units: HashMap<String, String>,
+    value_tables: HashMap<String, HashMap<i64, String>>
 }
 
 impl DataStore {
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),
-            units: HashMap::new()
+            units: HashMap::new(),
+            value_tables: HashMap::new()
         }
     }
     
     pub fn set_unit(&mut self, signal_name: &String, unit: &String) {
         self.units.insert(signal_name.clone(), unit.clone());
+    }
+
+    pub fn set_value_table(&mut self, signal_name: &String, value_table: HashMap<i64, String>) {
+        self.value_tables.insert(signal_name.clone(), value_table);
     }
 
     pub fn push<T: 'static>(&mut self, key: &str, timestamp: f64, value: T) {
@@ -89,7 +95,7 @@ impl DataStore {
         let mut buf_writer = BufWriter::with_capacity(1024 * 1024, writer);
         
         // Write magic header to identify binary format
-        buf_writer.write_all(b"BLF2MDF\x02")?; // 8 bytes: magic + version (v2 includes units)
+        buf_writer.write_all(b"BLF2MDF\x03")?; // 8 bytes: magic + version (v3 includes units and value_tables)
         
         // Write signal count as 4-byte little-endian
         buf_writer.write_all(&(self.data.len() as u32).to_le_bytes())?;
@@ -108,6 +114,27 @@ impl DataStore {
             let unit_bytes = unit.as_bytes();
             buf_writer.write_all(&(unit_bytes.len() as u16).to_le_bytes())?;
             buf_writer.write_all(unit_bytes)?;
+            
+            // Write value table information
+            let value_table = self.value_tables.get(key);
+            match value_table {
+                Some(table) => {
+                    // Write value table count
+                    buf_writer.write_all(&(table.len() as u16).to_le_bytes())?;
+                    
+                    // Write each value table entry
+                    for (value, description) in table {
+                        buf_writer.write_all(&value.to_le_bytes())?; // 8 bytes for i64 value
+                        let desc_bytes = description.as_bytes();
+                        buf_writer.write_all(&(desc_bytes.len() as u16).to_le_bytes())?; // 2 bytes for description length
+                        buf_writer.write_all(desc_bytes)?; // variable length description
+                    }
+                }
+                None => {
+                    // No value table for this signal
+                    buf_writer.write_all(&(0u16).to_le_bytes())?;
+                }
+            }
             
             // Determine type and write data
             if let Some(vec) = data.downcast_ref::<Vec<DataPoint<i64>>>() {

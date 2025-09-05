@@ -80,7 +80,13 @@ def load_from_stdin():
                 values = data_array[:, 8:].view(np.uint64).flatten()
             elif type_marker == 3:  # f64
                 values = data_array[:, 8:].view(np.float64).flatten()
-            
+
+            # Handle unknown value table values
+            if value_table:
+                for value in values:
+                    if value not in value_table:
+                        value_table[value] = f"{value} is unknown"
+
             yield signal_name, timestamps, values, unit, value_table
             
         elif type_marker == 4:  # string - variable length, can't batch as easily

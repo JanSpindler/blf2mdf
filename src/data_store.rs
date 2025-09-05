@@ -17,15 +17,21 @@ impl<T> DataPoint<T> {
 #[derive(Debug)]
 pub struct DataStore {
     data: HashMap<String, Box<dyn Any>>,
+    units: HashMap<String, String>
 }
 
 impl DataStore {
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),
+            units: HashMap::new()
         }
     }
     
+    pub fn set_unit(&mut self, signal_name: &String, unit: &String) {
+        self.units.insert(signal_name.clone(), unit.clone());
+    }
+
     pub fn push<T: 'static>(&mut self, key: &str, timestamp: f64, value: T) {
         let entry = self.data.entry(key.to_string()).or_insert_with(|| {
             Box::new(Vec::<DataPoint<T>>::new())
@@ -83,7 +89,7 @@ impl DataStore {
         let mut buf_writer = BufWriter::with_capacity(1024 * 1024, writer);
         
         // Write magic header to identify binary format
-        buf_writer.write_all(b"BLF2MDF\x01")?; // 8 bytes: magic + version
+        buf_writer.write_all(b"BLF2MDF\x02")?; // 8 bytes: magic + version (v2 includes units)
         
         // Write signal count as 4-byte little-endian
         buf_writer.write_all(&(self.data.len() as u32).to_le_bytes())?;
@@ -93,6 +99,15 @@ impl DataStore {
             let key_bytes = key.as_bytes();
             buf_writer.write_all(&(key_bytes.len() as u16).to_le_bytes())?;
             buf_writer.write_all(key_bytes)?;
+            
+            // Write unit information
+            let unit = match self.units.get(key) {
+                Some(u) => u,
+                None => "",
+            };
+            let unit_bytes = unit.as_bytes();
+            buf_writer.write_all(&(unit_bytes.len() as u16).to_le_bytes())?;
+            buf_writer.write_all(unit_bytes)?;
             
             // Determine type and write data
             if let Some(vec) = data.downcast_ref::<Vec<DataPoint<i64>>>() {

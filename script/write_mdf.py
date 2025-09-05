@@ -12,13 +12,18 @@ from io import BufferedReader
 def load_from_stdin():
     """
     Optimized binary reading with larger buffers and timestamp handling.
+    Supports both v1 (without units) and v2 (with units) binary formats.
     """
     # Use buffered reader for better performance
     reader = BufferedReader(sys.stdin.buffer, buffer_size=1024*1024)  # 1MB buffer
     
     # Read magic header
     magic = reader.read(8)
-    if magic != b"BLF2MDF\x01":
+    if magic == b"BLF2MDF\x01":
+        has_units = False
+    elif magic == b"BLF2MDF\x02":
+        has_units = True
+    else:
         raise ValueError("Invalid binary format")
     
     # Read signal count
@@ -28,6 +33,12 @@ def load_from_stdin():
         # Read signal name
         name_len = struct.unpack('<H', reader.read(2))[0]
         signal_name = reader.read(name_len).decode('utf-8')
+        
+        # Read unit (only in v2 format)
+        unit = ""
+        if has_units:
+            unit_len = struct.unpack('<H', reader.read(2))[0]
+            unit = reader.read(unit_len).decode('utf-8')
         
         # Read type marker
         type_marker = struct.unpack('B', reader.read(1))[0]
@@ -67,7 +78,7 @@ def load_from_stdin():
             elif type_marker == 3:  # f64
                 values = data_array[:, 8:].view(np.float64).flatten()
             
-            yield signal_name, timestamps, values
+            yield signal_name, timestamps, values, unit
             
         elif type_marker == 4:  # string - variable length, can't batch as easily
             timestamps = []
@@ -84,7 +95,7 @@ def load_from_stdin():
                 timestamps.append(timestamp)
                 values.append(value)
             
-            yield signal_name, np.array(timestamps), np.array(values)
+            yield signal_name, np.array(timestamps), np.array(values), unit
         
         else:
             # Unknown type marker - skip this signal
@@ -103,12 +114,14 @@ if __name__ == '__main__':
     mdf = asammdf.MDF()
 
     # Process signals from stdin
-    for signal_name, timestamps, values in tqdm.tqdm(load_from_stdin()):
-        mdf.append(asammdf.Signal(
+    for signal_name, timestamps, values, unit in tqdm.tqdm(load_from_stdin()):
+        signal = asammdf.Signal(
             samples=values,
             timestamps=timestamps,
-            name=signal_name
-        ))
+            name=signal_name,
+            unit=unit
+        )
+        mdf.append(signal)
 
     # Save to MF4 file
     mdf.save(output_file, overwrite=True, compression=2)

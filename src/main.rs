@@ -160,7 +160,12 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
     let blf_file = file_path.to_owned() + ".blf";
     let output_file = file_path.to_owned() + ".mf4";
 
+    // Init data store
+    let mut data_store = DataStore::new();
+
     // Create message ID to DBC message map for each bus
+    // Create message ID to DBC map for each bus
+    // Add all signal units to data store
     let mut dbc_messages_maps = Vec::<HashMap<u32, &can_dbc::Message>>::new();
     let mut dbc_map: Vec<HashMap<u32, &DBC>> = Vec::<HashMap<u32, &DBC>>::new();
     for bus_dbcs in dbcs {
@@ -172,6 +177,10 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
                 let msg_id = msg.message_id().raw();
                 bus_dbc_messages_map.insert(msg_id, msg);
                 bus_dbc_map.insert(msg_id, dbc);
+
+                for sig in msg.signals() {
+                    data_store.set_unit(sig.name(), sig.unit());
+                }
             }
         }
         
@@ -190,9 +199,6 @@ fn process_file(file_path: &str, dbcs: &[Vec<DBC>]) {
             return;
         }
     };
-
-    // Init data store
-    let mut data_store = DataStore::new();
 
     // Init first timestamp
     let mut first_timestamp = f64::MAX;

@@ -9,3 +9,7 @@ ISC (1): libloading
 MIT (38): ashpd, block2, can-dbc, cfg_aliases, crossterm, crossterm_winapi, derive-getters, dlib, endi, memoffset, mio, nix, nom, objc2, objc2-encode, objc2-foundation, quick-xml, redox_syscall, rfd, slab, synstructure, tracing, tracing-attributes, tracing-core, uds_windows, urlencoding, wayland-backend, wayland-client, wayland-protocols, wayland-scanner, wayland-sys, winnow, zbus, zbus_macros, zbus_names, zvariant, zvariant_derive, zvariant_utils
 MIT OR Unlicense (2): byteorder, memchr
 Unicode-3.0 (18): icu_collections, icu_locale_core, icu_normalizer, icu_normalizer_data, icu_properties, icu_properties_data, icu_provider, litemap, potential_utf, tinystr, writeable, yoke, yoke-derive, zerofrom, zerofrom-derive, zerotrie, zerovec, zerovec-derive
+
+asammdf  8.6.10   GNU Lesser General Public License v3 or later (LGPLv3+)
+numpy    2.1.2    BSD License
+tqdm     4.66.5   MIT License; Mozilla Public License 2.0 (MPL 2.0)

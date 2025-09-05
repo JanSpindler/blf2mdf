@@ -33,12 +33,7 @@ git clone https://github.com/JanSpindler/blf2mdf.git
 cd blf2mdf
 ```
 
-2. Install Python dependencies:
-```bash
-pip install asammdf numpy tqdm canmatrix
-```
-
-3. Build and install the Rust application:
+2. Build and install the Rust application:
 ```bash
 cargo install --path .
 ```

@@ -1,0 +1,13 @@
+[package]
+name = "blf2mdf"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1.0.99"
+byteorder = "1.5.0"
+can-dbc = "^6.0.0"
+flate2 = "1.1.2"
+rfd = "0.15.4"
+tqdm = "0.8.0"

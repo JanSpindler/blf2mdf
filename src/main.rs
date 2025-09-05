@@ -365,6 +365,7 @@ fn main() {
 
     // Get blf files
     let blf_files = FileDialog::new()
+        .set_title("Select .blf files")
         .set_directory(env::current_dir().unwrap())
         .add_filter("BLF Files", &["blf"])
         .pick_files()
@@ -373,8 +374,9 @@ fn main() {
 
     let mut dbcs = Vec::<Vec<DBC>>::new();
     let mut num_total_dbcs = 0;
-    for _ in 0..num_busses {
+    for bus_idx in 0..num_busses {
         let dbc_files = match FileDialog::new()
+            .set_title(format!("Select .dbc files for bus {}", bus_idx + 1))
             .set_directory(&blf_folder)
             .add_filter("DBC Files", &["dbc"])
             .pick_files() {

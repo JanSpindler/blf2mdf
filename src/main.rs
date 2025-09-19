@@ -356,7 +356,11 @@ fn main() {
     // Get number of busses
     println!("Enter the number of CAN busses: ");
     let mut num_busses = String::new();
-    io::stdin().read_line(&mut num_busses).unwrap();
+    if io::stdin().read_line(&mut num_busses).is_err() {
+        println!("Failed to read input");
+        return;
+    }
+    
     let num_busses: usize = num_busses.trim().parse().unwrap();
     if num_busses == 0 {
         println!("Number of CAN busses must be greater than 0");
@@ -369,7 +373,10 @@ fn main() {
         .set_directory(env::current_dir().unwrap())
         .add_filter("BLF Files", &["blf"])
         .pick_files()
-        .unwrap();
+        .unwrap_or_else(|| {
+            println!("Failed to select .blf files");
+            std::process::exit(1);
+        });
     let blf_folder = blf_files[0].parent().unwrap();
 
     let mut dbcs = Vec::<Vec<DBC>>::new();
